@@ -51,14 +51,17 @@ type Supervisor struct {
 	nextConnectedIndex  int
 	nextConnectedSignal chan struct{}
 
-	log *zerolog.Logger
+	log          *zerolog.Logger
+	logTransport *zerolog.Logger
 
 	reconnectCredentialManager *reconnectCredentialManager
 	useReconnectToken          bool
 
 	reconnectCh       chan ReconnectSignal
-	gracefulShutdownC chan struct{}
+	gracefulShutdownC <-chan struct{}
 }
+
+var errEarlyShutdown = errors.New("shutdown started")
 
 type tunnelError struct {
 	index int
@@ -66,7 +69,7 @@ type tunnelError struct {
 	err   error
 }
 
-func NewSupervisor(config *TunnelConfig, reconnectCh chan ReconnectSignal, gracefulShutdownC chan struct{}) (*Supervisor, error) {
+func NewSupervisor(config *TunnelConfig, reconnectCh chan ReconnectSignal, gracefulShutdownC <-chan struct{}) (*Supervisor, error) {
 	cloudflaredUUID, err := uuid.NewRandom()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate cloudflared instance ID: %w", err)
@@ -94,6 +97,7 @@ func NewSupervisor(config *TunnelConfig, reconnectCh chan ReconnectSignal, grace
 		tunnelErrors:               make(chan tunnelError),
 		tunnelsConnecting:          map[int]chan struct{}{},
 		log:                        config.Log,
+		logTransport:               config.LogTransport,
 		reconnectCredentialManager: newReconnectCredentialManager(connection.MetricsNamespace, connection.TunnelSubsystem, config.HAConnections),
 		useReconnectToken:          useReconnectToken,
 		reconnectCh:                reconnectCh,
@@ -106,6 +110,9 @@ func (s *Supervisor) Run(
 	connectedSignal *signal.Signal,
 ) error {
 	if err := s.initialize(ctx, connectedSignal); err != nil {
+		if err == errEarlyShutdown {
+			return nil
+		}
 		return err
 	}
 	var tunnelsWaiting []int
@@ -128,6 +135,7 @@ func (s *Supervisor) Run(
 		}
 	}
 
+	shuttingDown := false
 	for {
 		select {
 		// Context cancelled
@@ -141,7 +149,7 @@ func (s *Supervisor) Run(
 		// (note that this may also be caused by context cancellation)
 		case tunnelError := <-s.tunnelErrors:
 			tunnelsActive--
-			if tunnelError.err != nil {
+			if tunnelError.err != nil && !shuttingDown {
 				s.log.Err(tunnelError.err).Int(connection.LogFieldConnIndex, tunnelError.index).Msg("Connection terminated")
 				tunnelsWaiting = append(tunnelsWaiting, tunnelError.index)
 				s.waitForNextTunnel(tunnelError.index)
@@ -179,6 +187,8 @@ func (s *Supervisor) Run(
 				// No more tunnels outstanding, clear backoff timer
 				backoff.SetGracePeriod()
 			}
+		case <-s.gracefulShutdownC:
+			shuttingDown = true
 		}
 	}
 }
@@ -201,6 +211,8 @@ func (s *Supervisor) initialize(
 		return ctx.Err()
 	case tunnelError := <-s.tunnelErrors:
 		return tunnelError.err
+	case <-s.gracefulShutdownC:
+		return errEarlyShutdown
 	case <-connectedSignal.Wait():
 	}
 	// At least one successful connection, so start the rest
@@ -350,7 +362,7 @@ func (s *Supervisor) authenticate(ctx context.Context, numPreviousAttempts int) 
 		// This callback is invoked by h2mux when the edge initiates a stream.
 		return nil // noop
 	})
-	muxerConfig := s.config.MuxerConfig.H2MuxerConfig(handler, s.log)
+	muxerConfig := s.config.MuxerConfig.H2MuxerConfig(handler, s.logTransport)
 	muxer, err := h2mux.Handshake(edgeConn, edgeConn, *muxerConfig, h2mux.ActiveStreams)
 	if err != nil {
 		return nil, err

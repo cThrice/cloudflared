@@ -35,7 +35,7 @@ func newTestHTTP2Connection() (*http2Connection, net.Conn) {
 		testConfig,
 		&NamedTunnelConfig{},
 		&pogs.ConnectionOptions{},
-		testObserver,
+		NewObserver(&log, &log, false),
 		connIndex,
 		mockConnectedFuse{},
 		nil,
@@ -256,8 +256,11 @@ func TestGracefulShutdownHTTP2(t *testing.T) {
 		registered:   make(chan struct{}),
 		unregistered: make(chan struct{}),
 	}
+	events := &eventCollectorSink{}
 	http2Conn.newRPCClientFunc = rpcClientFactory.newMockRPCClient
-	http2Conn.gracefulShutdownC = make(chan struct{})
+	http2Conn.observer.RegisterSink(events)
+	shutdownC := make(chan struct{})
+	http2Conn.gracefulShutdownC = shutdownC
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -288,7 +291,7 @@ func TestGracefulShutdownHTTP2(t *testing.T) {
 	}
 
 	// signal graceful shutdown
-	close(http2Conn.gracefulShutdownC)
+	close(shutdownC)
 
 	select {
 	case <-rpcClientFactory.unregistered:
@@ -300,6 +303,11 @@ func TestGracefulShutdownHTTP2(t *testing.T) {
 
 	cancel()
 	wg.Wait()
+
+	events.assertSawEvent(t, Event{
+		Index:     http2Conn.connIndex,
+		EventType: Unregistering,
+	})
 }
 
 func benchmarkServeHTTP(b *testing.B, test testRequest) {

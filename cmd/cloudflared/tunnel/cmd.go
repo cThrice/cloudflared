@@ -154,7 +154,7 @@ func TunnelCommand(c *cli.Context) error {
 		return err
 	}
 	if name := c.String("name"); name != "" { // Start a named tunnel
-		return runAdhocNamedTunnel(sc, name)
+		return runAdhocNamedTunnel(sc, name, c.String(CredFileFlag))
 	}
 	if ref := config.GetConfiguration().TunnelID; ref != "" {
 		return fmt.Errorf("Use `cloudflared tunnel run` to start tunnel %s", ref)
@@ -169,10 +169,10 @@ func Init(ver string, gracefulShutdown chan struct{}) {
 }
 
 // runAdhocNamedTunnel create, route and run a named tunnel in one command
-func runAdhocNamedTunnel(sc *subcommandContext, name string) error {
+func runAdhocNamedTunnel(sc *subcommandContext, name, credentialsOutputPath string) error {
 	tunnel, ok, err := sc.tunnelActive(name)
 	if err != nil || !ok {
-		tunnel, err = sc.create(name)
+		tunnel, err = sc.create(name, credentialsOutputPath)
 		if err != nil {
 			return errors.Wrap(err, "failed to create tunnel")
 		}
@@ -313,11 +313,11 @@ func StartServer(
 		return fmt.Errorf(errText)
 	}
 
-	transportLog := logger.CreateTransportLoggerFromContext(c, isUIEnabled)
+	logTransport := logger.CreateTransportLoggerFromContext(c, isUIEnabled)
 
-	observer := connection.NewObserver(log, isUIEnabled)
+	observer := connection.NewObserver(log, logTransport, isUIEnabled)
 
-	tunnelConfig, ingressRules, err := prepareTunnelConfig(c, buildInfo, version, log, observer, namedTunnel)
+	tunnelConfig, ingressRules, err := prepareTunnelConfig(c, buildInfo, version, log, logTransport, observer, namedTunnel)
 	if err != nil {
 		log.Err(err).Msg("Couldn't start tunnel")
 		return err
@@ -364,7 +364,7 @@ func StartServer(
 			&ingressRules,
 			tunnelConfig.HAConnections,
 		)
-		app := tunnelUI.Launch(ctx, log, transportLog)
+		app := tunnelUI.Launch(ctx, log, logTransport)
 		observer.RegisterSink(app)
 	}
 
@@ -539,6 +539,7 @@ func tunnelFlags(shouldHide bool) []cli.Flag {
 	flags = append(flags, configureLoggingFlags(shouldHide)...)
 	flags = append(flags, configureProxyDNSFlags(shouldHide)...)
 	flags = append(flags, []cli.Flag{
+		credentialsFileFlag,
 		altsrc.NewBoolFlag(&cli.BoolFlag{
 			Name:   "is-autoupdated",
 			Usage:  "Signal the new process that Argo Tunnel client has been autoupdated",
@@ -1009,6 +1010,13 @@ func configureProxyDNSFlags(shouldHide bool) []cli.Flag {
 			Value:   cli.NewStringSlice("https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"),
 			EnvVars: []string{"TUNNEL_DNS_UPSTREAM"},
 			Hidden:  shouldHide,
+		}),
+		altsrc.NewIntFlag(&cli.IntFlag{
+			Name:    "proxy-dns-max-upstream-conns",
+			Usage:   "Maximum concurrent connections to upstream. Setting to 0 means unlimited.",
+			Value:   tunneldns.MaxUpstreamConnsDefault,
+			Hidden:  shouldHide,
+			EnvVars: []string{"TUNNEL_DNS_MAX_UPSTREAM_CONNS"},
 		}),
 		altsrc.NewStringSliceFlag(&cli.StringSliceFlag{
 			Name:  "proxy-dns-bootstrap",

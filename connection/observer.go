@@ -17,6 +17,7 @@ const (
 
 type Observer struct {
 	log             *zerolog.Logger
+	logTransport    *zerolog.Logger
 	metrics         *tunnelMetrics
 	tunnelEventChan chan Event
 	uiEnabled       bool
@@ -27,9 +28,10 @@ type EventSink interface {
 	OnTunnelEvent(event Event)
 }
 
-func NewObserver(log *zerolog.Logger, uiEnabled bool) *Observer {
+func NewObserver(log, logTransport *zerolog.Logger, uiEnabled bool) *Observer {
 	o := &Observer{
 		log:             log,
+		logTransport:    logTransport,
 		metrics:         newTunnelMetrics(),
 		uiEnabled:       uiEnabled,
 		tunnelEventChan: make(chan Event, observerChannelBufferSize),
@@ -113,6 +115,10 @@ func (o *Observer) sendURL(url string) {
 
 func (o *Observer) SendReconnect(connIndex uint8) {
 	o.sendEvent(Event{Index: connIndex, EventType: Reconnecting})
+}
+
+func (o *Observer) sendUnregisteringEvent(connIndex uint8) {
+	o.sendEvent(Event{Index: connIndex, EventType: Unregistering})
 }
 
 func (o *Observer) SendDisconnect(connIndex uint8) {

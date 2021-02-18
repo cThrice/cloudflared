@@ -39,7 +39,7 @@ type http2Connection struct {
 
 	activeRequestsWG  sync.WaitGroup
 	connectedFuse     ConnectedFuse
-	gracefulShutdownC chan struct{}
+	gracefulShutdownC <-chan struct{}
 	stoppedGracefully bool
 	controlStreamErr  error // result of running control stream handler
 }
@@ -52,7 +52,7 @@ func NewHTTP2Connection(
 	observer *Observer,
 	connIndex uint8,
 	connectedFuse ConnectedFuse,
-	gracefulShutdownC chan struct{},
+	gracefulShutdownC <-chan struct{},
 ) *http2Connection {
 	return &http2Connection{
 		conn: conn,
@@ -142,6 +142,7 @@ func (c *http2Connection) serveControlStream(ctx context.Context, respWriter *ht
 		c.stoppedGracefully = true
 	}
 
+	c.observer.sendUnregisteringEvent(c.connIndex)
 	rpcClient.GracefulShutdown(ctx, c.config.GracePeriod)
 	c.observer.log.Info().Uint8(LogFieldConnIndex, c.connIndex).Msg("Unregistered tunnel connection")
 	return nil
